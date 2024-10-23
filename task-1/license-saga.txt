@@ -1,0 +1,100 @@
+Компилируем, получаем такой вывод.
+
+[user@pc task-1]$ make
+make -C /home/user/linux-course/task-1/../linux-6.11 M=/home/user/linux-course/task-1 modules
+make[1]: вход в каталог «/home/user/linux-course/linux-6.11»
+  CC [M]  /home/user/linux-course/task-1/phonebook/main.o
+  CC [M]  /home/user/linux-course/task-1/phonebook/dev.o
+  CC [M]  /home/user/linux-course/task-1/phonebook/mutex.o
+  LD [M]  /home/user/linux-course/task-1/phonebook.o
+  MODPOST /home/user/linux-course/task-1/Module.symvers
+ERROR: modpost: GPL-incompatible module phonebook.ko uses GPL-only symbol 'class_destroy'
+ERROR: modpost: GPL-incompatible module phonebook.ko uses GPL-only symbol 'device_create'
+ERROR: modpost: GPL-incompatible module phonebook.ko uses GPL-only symbol 'class_create'
+ERROR: modpost: GPL-incompatible module phonebook.ko uses GPL-only symbol 'class_unregister'
+ERROR: modpost: GPL-incompatible module phonebook.ko uses GPL-only symbol 'device_destroy'
+make[3]: *** [scripts/Makefile.modpost:145: /home/user/linux-course/task-1/Module.symvers] Ошибка 1
+make[2]: *** [/home/user/linux-course/linux-6.11/Makefile:1878: modpost] Ошибка 2
+make[1]: *** [Makefile:224: __sub-make] Ошибка 2
+make[1]: выход из каталога «/home/user/linux-course/linux-6.11»
+make: *** [Makefile:26: all] Ошибка 2
+
+Наверно, можно просто поставить в лицензии GPL. Но неужели MIT лицензия несовместима с GPL? Мне
+казалось, что совместима. Поищем, как это работает, в чем дело.
+
+[user@pc linux-6.11]$ grep -r 'uses GPL-only symbol'
+^C
+[user@pc linux-6.11]$ grep -rn 'uses GPL-only symbol'
+scripts/mod/modpost.c:1710:			error("GPL-incompatible module %s.ko uses GPL-only symbol '%s'\n",
+grep: scripts/mod/modpost.o: двоичный файл совпадает
+grep: scripts/mod/modpost: двоичный файл совпадает
+^C
+[user@pc linux-6.11]$ cd scripts/mod
+[user@pc mod]$ nano modpost.c
+[user@pc mod]$ grep -rn 'is_gpl_compatible'
+modpost.h:97:	bool is_gpl_compatible;
+modpost.c:194:	 * Set mod->is_gpl_compatible to true by default. If MODULE_LICENSE()
+modpost.c:198:	mod->is_gpl_compatible = true;
+modpost.c:1575:			if (!license_is_gpl_compatible(license)) {
+modpost.c:1576:				mod->is_gpl_compatible = false;
+modpost.c:1709:		if (!mod->is_gpl_compatible && exp->is_gpl_only)
+[user@pc mod]$ nano modpost
+[user@pc mod]$ nano modpost.c
+[user@pc mod]$ make modpost
+cc    -c -o modpost.o modpost.c
+modpost.c:24:10: фатальная ошибка: hashtable.h: Нет такого файла или каталога
+   24 | #include <hashtable.h>
+      |          ^~~~~~~~~~~~~
+компиляция прервана.
+make: *** [<встроенное>: modpost.o] Ошибка 1
+[user@pc mod]$ cd ..
+[user@pc scripts]$ cd ..
+[user@pc linux-6.11]$ make modpost
+  HOSTCC  scripts/mod/modpost.o
+  HOSTLD  scripts/mod/modpost
+  CALL    scripts/checksyscalls.sh
+  DESCEND objtool
+  INSTALL libsubcmd_headers
+  MODPOST vmlinux.symvers
+[user@pc linux-6.11]$ cd scripts/mod
+[user@pc mod]$ nano modpost.c
+// Может не скомпилироваться, не страшно. Узнаем, какой тип у этой переменной.
+// Компилируем, видим вывод, что наша лицензия нашлась.
+[user@pc mod]$ grep -rn license_is_gpl_compatible
+modpost.c:1576:         if (!license_is_gpl_compatible(license)) {
+[user@pc mod]$ cd ..
+[user@pc scripts]$ cd ..
+[user@pc linux-6.11]$ grep -rn license_is_gpl_compatible
+scripts/mod/modpost.c:1576:         if (!license_is_gpl_compatible(license)) {
+kernel/bpf/syscall.c:2856: prog->gpl_compatible = license_is_gpl_compatible(license) ? 1 : 0;
+kernel/module/main.c:1607: if (!license_is_gpl_compatible(license)) {
+include/linux/license.h:5:static inline int license_is_gpl_compatible(const char *license)
+[user@pc linux-6.11]$ nano include/linux/license.h
+[user@pc linux-6.11]$ cat include/linux/license.h
+/* SPDX-License-Identifier: GPL-2.0-only */
+#ifndef __LICENSE_H
+#define __LICENSE_H
+
+static inline int license_is_gpl_compatible(const char *license)
+{
+   return (strcmp(license, "GPL") == 0
+      || strcmp(license, "GPL v2") == 0
+      || strcmp(license, "GPL and additional rights") == 0
+      || strcmp(license, "Dual BSD/GPL") == 0
+      || strcmp(license, "Dual MIT/GPL") == 0
+      || strcmp(license, "Dual MPL/GPL") == 0);
+}
+
+#endif
+Ладно, поставим GPL..
+[user@pc task-1]$ make
+make -C /home/user/linux-course/task-1/../linux-6.11 M=/home/user/linux-course/task-1 modules
+make[1]: вход в каталог «/home/user/linux-course/linux-6.11»
+  CC [M]  /home/user/linux-course/task-1/phonebook/main.o
+  LD [M]  /home/user/linux-course/task-1/phonebook.o
+  MODPOST /home/user/linux-course/task-1/Module.symvers
+modpost found license GPL
+  CC [M]  /home/user/linux-course/task-1/phonebook.mod.o
+  LD [M]  /home/user/linux-course/task-1/phonebook.ko
+make[1]: выход из каталога «/home/user/linux-course/linux-6.11»
+[user@pc task-1]$
