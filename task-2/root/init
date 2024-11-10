@@ -1,0 +1,20 @@
+#!/bin/busybox sh
+
+set -xe
+
+busybox mount -t devtmpfs devtmpfs /dev
+busybox mount -t tmpfs tmpfs /tmp
+busybox mount -t proc proc /proc
+busybox mount -t sysfs sysfs /sys
+
+{
+	{ set +x; } 2>/dev/null
+
+	# echo 0 > /proc/sys/kernel/printk
+
+	busybox setsid busybox sh
+
+	busybox insmod /keycounter.ko
+
+	busybox setsid busybox sh
+} > /dev/tty0 2>&1 < /dev/tty0
