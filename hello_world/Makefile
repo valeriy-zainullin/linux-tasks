@@ -3,7 +3,7 @@
 ifneq ($(KERNELRELEASE),)
     obj-m	:= hello_world.o
 else
-KDIR	:= $(shell pwd)/../linux-6.11
+KDIR	?= $(shell pwd)/../linux-kernel
 PWD		:= $(shell pwd)
 
 all:

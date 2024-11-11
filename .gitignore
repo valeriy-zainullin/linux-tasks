@@ -181,3 +181,5 @@ sphinx_*/
 
 /root/bin
 /root/lib
+
+*.ko

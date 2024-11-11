@@ -4,4 +4,4 @@
 
 set -e
 
-tar -c *.bash root task-* -f - | gzip > /dev/shm/linux-tasks.tar
+tar --exclude='*.ko' --exclude='*.o' -c *.bash root busybox-config task-* -f - | gzip > /dev/shm/linux-tasks.tar

@@ -4,8 +4,8 @@ set -xe
 
 # конфиг уже создан, например, с помощью make menuconfig. Если нет, создадим.
 # не забывайте, что существует make help.
-if [ ! -f .config ]; then
-	make homework_defconfig
+if [ ! -f busybox/.config ]; then
+	make -C busybox homework_defconfig
 fi
 make -C busybox -j$(nproc)
 
