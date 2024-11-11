@@ -2,4 +2,4 @@
 
 set -xe
 
-qemu-system-x86_64 -kernel boot/vmlinuz-6.11.0 -initrd boot/initramfs.gz -nographic -enable-kvm -cpu host -append "console=ttyS0"
+qemu-system-x86_64 -kernel boot/vmlinuz-* -initrd boot/initramfs.gz -nographic -enable-kvm -cpu host -append "console=ttyS0"

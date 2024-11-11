@@ -178,3 +178,6 @@ sphinx_*/
 /rust-project.json
 
 /boot
+
+/root/bin
+/root/lib

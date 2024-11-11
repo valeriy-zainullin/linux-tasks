@@ -2,9 +2,15 @@
 
 set -xe
 
-cd linux-6.11
-# конфиг уже создан, например, с помощью make menuconfig.
+cd linux-kernel
+# конфиг уже создан, например, с помощью make menuconfig. Если нет, создадим.
 # не забывайте, что существует make help. Еще есть поиск в интернете и kernel.org.
+if [ ! -f .config ]; then
+	make x86_64_defconfig
+	# make defconfig возьмет конфиг работающей сейчас системы, он может не подойти,
+	#   т.к. там еще сертификаты canonical будут требоваться, если мы на ubuntu...
+	#   https://askubuntu.com/a/1329625
+fi
 make -j$(nproc)
 
 # INSTALL_PATH=../boot make install
@@ -22,8 +28,8 @@ make -j$(nproc)
 # cp arch/x86_64/boot/bzImage ../boot/vmlinuz
 # А можно просто проигнорировать сообщение, это ок.
 
-sudo chown -R $USER:$USER ../root
+mkdir -p ../boot
+rm -f ../boot/config-* ../boot/System.map-* ../boot/vmlinuz-*
 INSTALL_PATH=../boot INSTALL_MOD_PATH=../root/lib make install modules_install
-sudo chown -R root:root ../root
 
 { echo "Ignore that \"LILO\" message, if you have any, we don't need a bootloader. Files are copied at this point, make install configures LILO for convenience, because LILO uses block number to locate the kernel. https://serverfault.com/a/383704"; } 2>/dev/null
