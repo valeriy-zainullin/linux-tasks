@@ -1,0 +1,12 @@
+vscode-data
+.vscode
+*.d
+modules.order
+Module.symvers
+*.o
+*.cmd
+*.mod
+*.mod.c
+*.ko
+initramfs.gz
+root/

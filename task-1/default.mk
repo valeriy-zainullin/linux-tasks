@@ -8,7 +8,7 @@ ifeq ($(wildcard $(BOOT_DIR)),)
  $(error BOOT_DIR is not accessible. This makefile needs path to directory with vmlinuz file for qemu -kernel argument)
 endif
 
-KDIR         := $(shell pwd)/../linux-6.11
+KDIR         := $(shell pwd)/../linux-kernel
 PWD          := $(shell pwd)
 
 TEST_FILES   := $(wildcard tests/*.sh tests/bin/*) tests/init

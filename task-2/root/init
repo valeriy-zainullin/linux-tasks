@@ -8,13 +8,27 @@ busybox mount -t proc proc /proc
 busybox mount -t sysfs sysfs /sys
 
 {
+	busybox insmod /keycounter.ko
 	{ set +x; } 2>/dev/null
 
-	# echo 0 > /proc/sys/kernel/printk
+	# Шрифта с кириллицей нет, потому будут квадратики...
+	#   При установке arch linux тоже приходится ставить шрифт,
+	#   чтобы видеть русский язык в tty.
 
+	busybox echo 'В оболочках приписывайте в начало команд `busybox `.' >/dev/ttyS0
+
+	busybox echo 'Для этой командной оболочки вы увидите статистику по нажатиям клавиш раз в секунду. Напишите `exit 0`, когда закончите работу, откроется вторая оболочка.' >/dev/ttyS0
 	busybox setsid busybox sh
 
-	busybox insmod /keycounter.ko
+	{ set -x; } 2>/dev/null
+	busybox rmmod keycounter.ko
+	busybox insmod /keycounter.ko logging_period_ms=5000
+	{ set +x; } 2>/dev/null
 
+	busybox echo 'Для этой командной оболочки вы увидите статистику по нажатиям клавиш раз в пять секунд. Напишите `exit 0`, когда закончите работу, операционная система завершится с помощью `busybox poweroff -f`.' >/dev/ttyS0
 	busybox setsid busybox sh
+
+	{ set -x; } 2>/dev/null
+	busybox poweroff -f
+	{ set +x; } 2>/dev/null
 } > /dev/tty0 2>&1 < /dev/tty0
