@@ -30,6 +30,6 @@ make -j$(nproc)
 
 mkdir -p ../boot
 rm -f ../boot/config-* ../boot/System.map-* ../boot/vmlinuz-*
-INSTALL_PATH=../boot INSTALL_MOD_PATH=../root/lib make install modules_install
+INSTALL_PATH=../boot MOD_PATH=../root/lib make install modules_prepare
 
 { echo "Ignore that \"LILO\" message, if you have any, we don't need a bootloader. Files are copied at this point, make install configures LILO for convenience, because LILO uses block number to locate the kernel. https://serverfault.com/a/383704"; } 2>/dev/null
