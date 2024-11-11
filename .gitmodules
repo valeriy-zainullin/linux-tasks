@@ -1,0 +1,6 @@
+[submodule "linux-kernel"]
+	path = linux-kernel
+	url = git@github.com:valeriy-zainullin/linuxsrc-for-homework.git
+[submodule "busybox"]
+	path = busybox
+	url = git@github.com:valeriy-zainullin/busybox-for-homework.git
