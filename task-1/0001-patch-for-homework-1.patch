@@ -1,0 +1,403 @@
+From d80b5c13f6b599ebbdd1de78665eeb918bbde05f Mon Sep 17 00:00:00 2001
+From: Valeriy Zainullin <valeriy.zainullin@yandex.ru>
+Date: Sun, 10 Nov 2024 18:27:26 +0300
+Subject: [PATCH] Patch for homework #1.
+
+---
+ Kconfig                                |   2 +
+ arch/x86/entry/syscalls/syscall_64.tbl |   3 +
+ ipc/Makefile                           |   1 +
+ ipc/phonebook/Kconfig                  |  10 ++
+ ipc/phonebook/Makefile                 |   6 +
+ ipc/phonebook/phonebook.c              | 226 +++++++++++++++++++++++++
+ ipc/phonebook/phonebook.h              |  82 +++++++++
+ 7 files changed, 330 insertions(+)
+ create mode 100644 ipc/phonebook/Kconfig
+ create mode 100644 ipc/phonebook/Makefile
+ create mode 100644 ipc/phonebook/phonebook.c
+ create mode 100644 ipc/phonebook/phonebook.h
+
+diff --git a/Kconfig b/Kconfig
+index 745bc773f567..5ea095366180 100644
+--- a/Kconfig
++++ b/Kconfig
+@@ -30,3 +30,5 @@ source "lib/Kconfig"
+ source "lib/Kconfig.debug"
+ 
+ source "Documentation/Kconfig"
++
++source "ipc/phonebook/Kconfig"
+diff --git a/arch/x86/entry/syscalls/syscall_64.tbl b/arch/x86/entry/syscalls/syscall_64.tbl
+index 7093ee21c0d1..27a19394610a 100644
+--- a/arch/x86/entry/syscalls/syscall_64.tbl
++++ b/arch/x86/entry/syscalls/syscall_64.tbl
+@@ -386,6 +386,9 @@
+ 460	common	lsm_set_self_attr	sys_lsm_set_self_attr
+ 461	common	lsm_list_modules	sys_lsm_list_modules
+ 462 	common  mseal			sys_mseal
++463	common	add_user	sys_add_user
++464	common	get_user	sys_get_user
++465	common	del_user	sys_del_user
+ 
+ #
+ # Due to a historical design error, certain syscalls are numbered differently
+diff --git a/ipc/Makefile b/ipc/Makefile
+index c2558c430f51..fcf76bab6803 100644
+--- a/ipc/Makefile
++++ b/ipc/Makefile
+@@ -10,3 +10,4 @@ obj-$(CONFIG_POSIX_MQUEUE) += mqueue.o msgutil.o
+ obj-$(CONFIG_IPC_NS) += namespace.o
+ obj-$(CONFIG_POSIX_MQUEUE_SYSCTL) += mq_sysctl.o
+ 
++obj-y += phonebook/
+diff --git a/ipc/phonebook/Kconfig b/ipc/phonebook/Kconfig
+new file mode 100644
+index 000000000000..e076bad4f580
+--- /dev/null
++++ b/ipc/phonebook/Kconfig
+@@ -0,0 +1,10 @@
++# SPDX-License-Identifier: GPL-2.0-only
++#
++# Phonebook syscalls configuration
++#
++
++config PHONEBOOK
++	bool "Phonebook syscalls"
++	default y
++	help
++	  Support for phonebook syscalls.
+diff --git a/ipc/phonebook/Makefile b/ipc/phonebook/Makefile
+new file mode 100644
+index 000000000000..bbdc00ef08f1
+--- /dev/null
++++ b/ipc/phonebook/Makefile
+@@ -0,0 +1,6 @@
++# SPDX-License-Identifier: GPL-2.0-only
++#
++# Makefile for phonebook syscalls
++#
++
++obj-$(CONFIG_PHONEBOOK) += phonebook.o
+diff --git a/ipc/phonebook/phonebook.c b/ipc/phonebook/phonebook.c
+new file mode 100644
+index 000000000000..c7fc754e7db9
+--- /dev/null
++++ b/ipc/phonebook/phonebook.c
+@@ -0,0 +1,226 @@
++/*
++ * Phonebook subsystem for Linux.
++ *
++ * Copyright (C) 2024       Valeriy Zainullin       (zainullin.vv@phystech.edu)
++ *
++ * This file is released under the GPL.
++ */
++
++#include <linux/kernel.h>
++#include <linux/mutex.h>
++#include <linux/module.h>
++#include <linux/syscalls.h>
++
++#include "phonebook.h"
++
++// From module subsystem internals. $(linux_src)/kernel/module/internal.h
++extern struct mutex module_mutex;
++
++// https://stackoverflow.com/questions/23013562/linux-kernel-get-function-address-for-kernel-driver
++
++typedef long (*pb_get_user_t)(const char* surname, unsigned int len, struct pb_user_data* output_data);
++
++typedef long (*pb_add_user_t)(struct pb_user_data* input_data);
++
++// Удаляет всех пользователей с такой фамилией.
++typedef long (*pb_del_user_t)(const char* surname, unsigned int len);
++
++// GFP_KERNEL_ACCOUNT.
++// https://www.kernel.org/doc/html/next/core-api/memory-allocation.html
++
++static struct module* find_pb_module(void) {
++	// Race condition с выгрузкой модуля... Надо какой-то mutex
++	//   взять в ядре на загрузку выгрузку модулей. Но это плохо,
++	//   один процесс может положить всю работу. Надо запретить
++	//   выгружать модуль..
++	// https://stackoverflow.com/questions/63867813/stop-unloading-the-linux-kernel-module
++
++	// С try_module_get есть проблема: он принимает struct module*, которого
++	//   у нас еще нет. Если посмотреть комментарий к нему в заголовке, то мы
++	//   еще должны убедиться, что модуль не выгружается.
++	// Вдохновимся: https://stackoverflow.com/questions/10627738/check-if-linux-kernel-module-is-running
++	//   Мы сделаем так: возьмем mutex на загрузку модулей, найдем наш. Не нашли -- вернем
++	//   ошибку. Нашли -- увеличиваем refcount (счетчик ссылок) c помощью
++	//   try_module_get, пока держим mutex. Вроде, try_module_get не берет
++	//   этот mutex внутри себя. Он буквально идет в структуру и увеличивает
++	//   atomic с количеством ссылок.
++	mutex_lock(&module_mutex);
++
++	struct module* mod = find_module("phonebook");
++	if (mod == NULL) {
++		mutex_unlock(&module_mutex);
++		return NULL;
++	}
++
++	if (!try_module_get(mod)) {
++		// Видимо, модуль в текущий момент выгружается.
++		mutex_unlock(&module_mutex);
++		return NULL;
++	}
++
++	// Модуль уже будет жить, мы взяли на него ссылку, refcount не станет
++	//   нулевым из-за нашей ссылки. Отпускаем mutex, вернем ссылку.
++	mutex_unlock(&module_mutex);
++	return mod;
++}
++
++SYSCALL_DEFINE1(add_user, struct pb_user_data* __user, ud) {
++	struct module* pb_mod = find_pb_module();
++	if (pb_mod == NULL) {
++		return -ENODEV;
++	}
++
++	// Поиск по kernel/module/kallsyms.c дал результаты, удалось найти функцию,
++	//   которая ищет в модуле, если у нас есть struct module*, заданный
++	//   символ.
++	// Значением символа с названием функции будет ее адрес в памяти,
++	//   занятой модулем после загрузки.
++	pb_add_user_t func = (pb_add_user_t) find_kallsyms_symbol_value(pb_mod, "pb_add_user");
++	if (func == NULL) {
++		// Мы "брали" модуль (увеличивали счетчик ссылок), теперь положим,
++		//   чтобы его могли выгрузить при необходимости.
++		module_put(pb_mod);
++		return -ENODEV;
++	}
++
++	struct pb_user_data* copied_ud = kzalloc(sizeof(struct pb_user_data), GFP_KERNEL_ACCOUNT);
++	if (copied_ud == NULL) {
++		module_put(pb_mod);
++		return -ENOMEM;
++	}
++
++	unsigned long error_count = copy_from_user(copied_ud, ud, sizeof(*copied_ud));
++	if (error_count != 0) {
++		kfree(copied_ud);
++		module_put(pb_mod);
++		return -EFAULT;
++	}
++
++	long result = func(copied_ud);
++
++	kfree(copied_ud);
++	module_put(pb_mod);
++	return result;
++}
++
++SYSCALL_DEFINE3(get_user, const char* __user, last_name, unsigned int, len, struct pb_user_data* __user, ud) {
++	struct module* pb_mod = find_pb_module();
++	if (pb_mod == NULL) {
++		return -ENODEV;
++	}
++
++	// Поиск по kernel/module/kallsyms.c дал результаты, удалось найти функцию,
++	//   которая ищет в модуле, если у нас есть struct module*, заданный
++	//   символ.
++	// Значением символа с названием функции будет ее адрес в памяти,
++	//   занятой модулем после загрузки.
++	pb_get_user_t func = (pb_get_user_t) find_kallsyms_symbol_value(pb_mod, "pb_get_user");
++	if (func == NULL) {
++		// Мы "брали" модуль (увеличивали счетчик ссылок), теперь положим,
++		//   чтобы его могли выгрузить при необходимости.
++		module_put(pb_mod);
++		return -ENODEV;
++	}
++
++	char* copied_last_name = kzalloc(len, GFP_KERNEL_ACCOUNT);
++	if (copied_last_name == NULL) {
++		module_put(pb_mod);
++		return -ENOMEM;
++	}
++
++	if (len == 0) {
++		// Copy to user returns number of bytes not copied.
++		//   Which means on success it returns 0.
++		//   But if the length is zero, then there should be
++		//   no errors, it seems. Let's check for this.
++		//   Also my code elsewhere should check for it, but
++		//   I didn't think about this case before. Like I was
++		//   writing a general and more practical case :)
++		//   We can always add some defense programming in play :)
++		kfree(copied_last_name);
++		module_put(pb_mod);
++		return -EINVAL;
++	}
++
++	unsigned long error_count = copy_from_user(copied_last_name, last_name, len);
++	if (error_count != 0) {
++		kfree(copied_last_name);
++		module_put(pb_mod);
++		return -EFAULT;
++	}
++
++	struct pb_user_data* ud_to_copy = kzalloc(sizeof(struct pb_user_data), GFP_KERNEL_ACCOUNT);
++	if (ud_to_copy == NULL) {
++		kfree(copied_last_name);
++		module_put(pb_mod);
++		return -ENOMEM;
++	}
++
++	long result = func(copied_last_name, len, ud_to_copy);
++
++	error_count = copy_to_user(ud, ud_to_copy, sizeof(*ud_to_copy)); 
++	if (error_count != 0) {
++		kfree(copied_last_name);
++		kfree(ud_to_copy);
++		module_put(pb_mod);
++		return -EFAULT;		
++	}
++
++	kfree(copied_last_name);
++	kfree(ud_to_copy);
++	module_put(pb_mod);
++	return result;
++}
++
++SYSCALL_DEFINE2(del_user, const char* __user, last_name, unsigned int, len) {
++	struct module* pb_mod = find_pb_module();
++	if (pb_mod == NULL) {
++		return -ENODEV;
++	}
++
++	// Поиск по kernel/module/kallsyms.c дал результаты, удалось найти функцию,
++	//   которая ищет в модуле, если у нас есть struct module*, заданный
++	//   символ.
++	// Значением символа с названием функции будет ее адрес в памяти,
++	//   занятой модулем после загрузки.
++	pb_del_user_t func = (pb_del_user_t) find_kallsyms_symbol_value(pb_mod, "pb_del_user");
++	if (func == NULL) {
++		// Мы "брали" модуль (увеличивали счетчик ссылок), теперь положим,
++		//   чтобы его могли выгрузить при необходимости.
++		module_put(pb_mod);
++		return -ENODEV;
++	}
++
++	char* copied_last_name = kzalloc(len, GFP_KERNEL_ACCOUNT);
++	if (copied_last_name == NULL) {
++		module_put(pb_mod);
++		return -ENOMEM;
++	}
++
++	if (len == 0) {
++		// Copy to user returns number of bytes not copied.
++		//   Which means on success it returns 0.
++		//   But if the length is zero, then there should be
++		//   no errors, it seems. Let's check for this.
++		//   Also my code elsewhere should check for it, but
++		//   I didn't think about this case before. Like I was
++		//   writing a general and more practical case :)
++		//   We can always add some defense programming in play :)
++		kfree(copied_last_name);
++		module_put(pb_mod);
++		return -EINVAL;
++	}
++
++	unsigned long error_count = copy_from_user(copied_last_name, last_name, len);
++	if (error_count != 0) {
++		kfree(copied_last_name);
++		module_put(pb_mod);
++		return -EFAULT;
++	}
++
++	long result = func(copied_last_name, len);
++
++	kfree(copied_last_name);
++	module_put(pb_mod);
++	return result;
++}
+diff --git a/ipc/phonebook/phonebook.h b/ipc/phonebook/phonebook.h
+new file mode 100644
+index 000000000000..6637b9e83d23
+--- /dev/null
++++ b/ipc/phonebook/phonebook.h
+@@ -0,0 +1,82 @@
++#pragma once
++
++#include <linux/kernel.h>
++
++// https://stackoverflow.com/questions/9881357/what-is-the-linux-kernel-equivalent-to-the-memset-function
++// In sort, just include linux/string.h, because we don't want to confuse include path with c standard
++//   library.
++#include <linux/string.h>
++
++// Строки должны помещаться в 64 байта с учетом нулевого байта.
++//   В utf-8 символы русского языка занимают по 2 байта. Потому
++//   Можно будет поместить не более (64 - 1) / 2 (с округлением
++//   вниз) = 31 букву русского языка.
++struct pb_user_data {
++  char first_name[64];
++  char last_name[64];
++  unsigned int age;
++  char telnum[16];
++  char email[64];
++};
++#define PB_PRINT_USER_DATA(printf, ud, prefix, suffix) \
++  printf(                                              \
++    prefix "(%s, %s, %u, %s, %s)" suffix,              \
++    (ud).first_name,                                   \
++    (ud).last_name,                                    \
++    (ud).age,                                          \
++    (ud).telnum,                                       \
++    (ud).email                                         \
++  )
++
++#define cmp_char_array(lhs, rhs) strncmp(lhs, rhs, sizeof(lhs))
++static inline int pb_ud_cmp(const struct pb_user_data* ud1, const struct pb_user_data* ud2) {
++  int cmp = 0;
++
++  cmp = cmp_char_array(ud1->first_name, ud2->first_name);
++  if (cmp != 0) return cmp;
++
++  cmp = cmp_char_array(ud1->last_name, ud2->last_name);
++  if (cmp != 0) return cmp;
++
++  if (ud1->age != ud2->age) {
++    if (ud1->age < ud2->age) {
++      return -1;
++    }
++
++    return 1;
++  }
++
++  cmp = cmp_char_array(ud1->telnum, ud2->telnum);
++  if (cmp != 0) return cmp;
++
++  cmp = cmp_char_array(ud1->email, ud2->email);
++  if (cmp != 0) return cmp;
++
++  return 0;
++}
++#undef cmp_char_array
++
++static inline void pb_ud_init(struct pb_user_data* ud) {
++  memset(ud, 0, sizeof(*ud));
++}
++
++static const int PB_OPERATION_ADD               = 1;
++static const int PB_OPERATION_FIND_BY_LAST_NAME = 2; // Выдаст все pb_user_data с таким last_name
++static const int PB_OPERATION_FIND_BY_ID        = 3;
++static const int PB_OPERATION_DELETE            = 4; // Ищет по last_name, а затем среди них ищет то, что надо удалить, удаляет.
++
++#define PB_PHONEBOOK_SIZE 256
++#define PB_MSG_BUFFER_LEN sizeof(int) + sizeof(struct pb_user_data)
++
++static const char* const pb_path = "/dev/pbchar";
++static const char* const pb_by_lastname_path = "/dev/pb/by-lastname";
++// Напоминает /dev/by_label, когда ищется загрузочный раздел у установщика archlinux. 
++// Решил загуглить, чтобы была информация. Я просто несколько раз воочию видел.
++//   А можно еще почитать.
++//   https://yandex.ru/search/?text=dev+by_label&lr=213&clid=1836587
++//   Первые несколько ссылок посмотрел:
++//     https://zalinux.ru/?p=6662
++//     https://wiki.archlinux.org/title/Persistent_block_device_naming
++// Оказывается, там by-label, а не by_label. Ок.
++
++// ssize_t pb_add(
+-- 
+2.45.2
+

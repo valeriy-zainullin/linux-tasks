@@ -1,0 +1,132 @@
+From 505fda8820231e1398cc0c1b29649cb2bb906469 Mon Sep 17 00:00:00 2001
+From: Valeriy Zainullin <valeriy.zainullin@yandex.ru>
+Date: Tue, 12 Nov 2024 11:48:22 +0300
+Subject: [PATCH] Patch for homework #3.
+
+---
+ fs/proc/base.c        | 17 +++++++++++++++++
+ include/linux/sched.h | 21 +++++++++++++++++++++
+ kernel/Kconfig.hz     | 10 ++++++++++
+ kernel/sched/core.c   |  7 +++++++
+ 4 files changed, 55 insertions(+)
+
+diff --git a/fs/proc/base.c b/fs/proc/base.c
+index 72a1acd03675..d864c572ba38 100644
+--- a/fs/proc/base.c
++++ b/fs/proc/base.c
+@@ -3239,6 +3239,15 @@ static int proc_stack_depth(struct seq_file *m, struct pid_namespace *ns,
+ }
+ #endif /* CONFIG_STACKLEAK_METRICS */
+ 
++#ifdef CONFIG_NR_TIMES_SCHEDULED
++static int proc_pid_nr_times_scheduled(struct seq_file *m, struct pid_namespace *ns,
++				struct pid *pid, struct task_struct *task)
++{
++	seq_printf(m, "%d\n", atomic_read(&task->nr_times_scheduled));
++	return 0;
++}
++#endif /* CONFIG_NR_TIMES_SCHEDULED */
++
+ /*
+  * Thread groups
+  */
+@@ -3359,6 +3368,13 @@ static const struct pid_entry tgid_base_stuff[] = {
+ 	ONE("ksm_merging_pages",  S_IRUSR, proc_pid_ksm_merging_pages),
+ 	ONE("ksm_stat",  S_IRUSR, proc_pid_ksm_stat),
+ #endif
++#ifdef CONFIG_NR_TIMES_SCHEDULED
++	// S_IRUSR, видимо, даст читать только владельцу (в определении 400,
++	//   r--------, это должно быть как в chmod, по идее).
++	// У файлов в /proc действительно есть владельцы. Владеют те, под чьим
++	//   именем работают процессы, как видим. `ls -l /proc`.
++	ONE("nr_times_scheduled", S_IRUSR, proc_pid_nr_times_scheduled)
++#endif
+ };
+ 
+ static int proc_tgid_base_readdir(struct file *file, struct dir_context *ctx)
+@@ -3698,6 +3714,7 @@ static const struct pid_entry tid_base_stuff[] = {
+ 	ONE("ksm_merging_pages",  S_IRUSR, proc_pid_ksm_merging_pages),
+ 	ONE("ksm_stat",  S_IRUSR, proc_pid_ksm_stat),
+ #endif
++
+ };
+ 
+ static int proc_tid_base_readdir(struct file *file, struct dir_context *ctx)
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index f8d150343d42..c149f056f2fc 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1568,6 +1568,27 @@ struct task_struct {
+ 	struct user_event_mm		*user_event_mm;
+ #endif
+ 
++#ifdef CONFIG_NR_TIMES_SCHEDULED
++	// We have an int inside of this. Well, it's mostly 32bit. There
++	//   are values up to 2^31 - 1. Imagine task switch happens each
++	//   100ms, then we get 10 switches per second. If we can
++	//   represent 2^31 - 1 switches, then it's enough for
++	//   (2^31 - 1) / 10 seconds =
++	//   214748364.7  seconds    ~=
++	//   3579139.4116 minutes    ~=
++	//   59652.3235   hours      ~=
++	//   2485.5134    days       ~=
++	//   6.8096       years.
++	// Which is not bad, 6 years of uptime. And not only that, but
++	//   task may be not scheduled as often. We're considering the
++	//   case, when one it's scheduled each iteration. Then it lasts
++	//   6 years, but that's our worst-case scenario. So should work
++	//   for 6 years of uptime without an overflow.
++	// We should think about such ideas, our code may work for a huge
++	//   amount of time.
++	atomic_t                     nr_times_scheduled;
++#endif
++
+ 	/*
+ 	 * New fields for task_struct should be added above here, so that
+ 	 * they are included in the randomized portion of task_struct.
+diff --git a/kernel/Kconfig.hz b/kernel/Kconfig.hz
+index 38ef6d06888e..514c40fc0e36 100644
+--- a/kernel/Kconfig.hz
++++ b/kernel/Kconfig.hz
+@@ -57,3 +57,13 @@ config HZ
+ 
+ config SCHED_HRTICK
+ 	def_bool HIGH_RES_TIMERS
++
++config NR_TIMES_SCHEDULED
++	bool "Count times the task was scheduled"
++	default y
++	help
++	  Count times task was scheduled for execution and export it
++	  through "/proc/<pid>/nr_times_scheduled" file.
++	  Current implementation supports 6 years of counting without an
++	  overflow at the reschedule rate of 100ms (if the same task is
++	  rescheduled), meaning the counter is 32bit.
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index f3951e4a55e5..072b389e45e9 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -4557,6 +4557,10 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
+ 	 */
+ 	p->prio = current->normal_prio;
+ 
++#ifdef CONFIG_NR_TIMES_SCHEDULED
++	atomic_set(&p->nr_times_scheduled, 0);
++#endif /* CONFIG_NR_TIMES_SCHEDULED */
++
+ 	uclamp_fork(p);
+ 
+ 	/*
+@@ -6482,6 +6486,9 @@ static void __sched notrace __schedule(unsigned int sched_mode)
+ 	}
+ 
+ 	next = pick_next_task(rq, prev, &rf);
++#ifdef CONFIG_NR_TIMES_SCHEDULED
++	atomic_inc(&next->nr_times_scheduled);
++#endif
+ 	clear_tsk_need_resched(prev);
+ 	clear_preempt_need_resched();
+ #ifdef CONFIG_SCHED_DEBUG
+-- 
+2.45.2
+
